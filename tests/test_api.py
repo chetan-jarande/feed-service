@@ -154,3 +154,63 @@ def test_analyze_and_fix_flow(tmp_path) -> None:
     assert rows[0]["result"] == "PASS: Analyzed"
     # invalid-pkg is not on PyPI during testing or is an upstream error
     assert "PASS" in rows[1]["result"] or "FAILED" in rows[1]["result"]
+
+
+def test_lifespan_http_session() -> None:
+    from fastapi.testclient import TestClient
+
+    from dependencies import create_http_session
+    from main import app
+
+    session = create_http_session(pool_maxsize=10, retries=2)
+    assert session is not None
+    session.close()
+
+    with TestClient(app) as test_client:
+        response = test_client.get("/health")
+        assert response.status_code == 200
+        assert hasattr(app.state, "http_session")
+        assert app.state.http_session is not None
+
+
+def test_analyze_and_fix_empty_csv(tmp_path) -> None:
+    csv_file = tmp_path / "empty.csv"
+    csv_file.write_text("package name,current version,version to upgrade to\n", encoding="utf-8")
+
+    response = client.post(
+        "/packages/analyze-and-fix",
+        json={
+            "csv_path": str(csv_file),
+            "actions": ["ANALYZE"],
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_processed"] == 0
+
+
+def test_compat_check_endpoint() -> None:
+    response = client.post(
+        "/packages/compat-check",
+        json={
+            "packages": ["requests==2.31.0"],
+            "python_tag": "cp312",
+            "include_pypi": True,
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert len(data["rows"]) == 1
+    assert data["rows"][0]["package"] == "requests"
+
+
+def test_download_endpoint() -> None:
+    response = client.post(
+        "/packages/download",
+        json={
+            "name": "nonexistentpackage1234567890qwerty",
+            "python_tag": "cp312",
+        },
+    )
+    assert response.status_code == 404

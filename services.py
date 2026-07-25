@@ -1,9 +1,11 @@
 import base64
 import csv
+import json
 import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import ClassVar
 from urllib.parse import unquote
 
@@ -72,9 +74,10 @@ class FeedService:
         "notes",
     ]
 
-    def __init__(self, settings: Settings) -> None:
-        """Initializes FeedService with settings and logger."""
+    def __init__(self, settings: Settings, session: requests.Session | None = None) -> None:
+        """Initializes FeedService with settings, optional pooled HTTP session, and logger."""
         self.settings = settings
+        self.session = session or requests.Session()
         self.logger = get_logger(__name__)
 
     def _auth_header(self) -> dict[str, str]:
@@ -85,10 +88,10 @@ class FeedService:
         return {}
 
     def _get(self, url: str, auth: bool = False) -> requests.Response:
-        """Executes HTTP GET request with optional authentication and standard timeout."""
+        """Executes HTTP GET request using connection-pooled session with optional auth and timeout."""
         try:
             headers = self._auth_header() if auth else {}
-            resp = requests.get(url, headers=headers, timeout=self.settings.request_timeout)
+            resp = self.session.get(url, headers=headers, timeout=self.settings.request_timeout)
             return resp
         except Exception as e:
             raise UpstreamError(f"HTTP request to {url} failed: {e}") from e
@@ -363,7 +366,7 @@ class FeedService:
                 continue
 
             file_path = os.path.join(target_dir, filename)
-            resp = requests.get(url, stream=True, timeout=self.settings.request_timeout)
+            resp = self.session.get(url, stream=True, timeout=self.settings.request_timeout)
             if resp.status_code != 200:
                 raise UpstreamError(f"Failed to download wheel from {url}")
 
@@ -930,7 +933,7 @@ class FeedService:
 
                 url = file_info.get("url")
                 file_path = os.path.join(dest_dir, fn)
-                resp = requests.get(url, stream=True, timeout=self.settings.request_timeout)
+                resp = self.session.get(url, stream=True, timeout=self.settings.request_timeout)
                 if resp.status_code != 200:
                     return f"FAILED: Download failed for {fn}"
                 with open(file_path, "wb") as fh:
@@ -946,86 +949,154 @@ class FeedService:
 
         return "PASS: No action needed"
 
-    def process_analyze_and_fix(self, req: AnalyzeAndFixRequest) -> AnalyzeAndFixResponse:
-        """Processes batch upgrade CSV file, analyzing PyPI/feed status and optional auto-fix uploading."""
-        import json
+    def _process_single_row(
+        self,
+        row: dict,
+        req: AnalyzeAndFixRequest,
+        target_feed: str,
+    ) -> tuple[dict, str]:
+        """Processes an individual row from a CSV for analyze and fix actions."""
+        updated_row = dict(row)
+        pkg = updated_row.get("package name", "").strip()
+        target_version = updated_row.get("version to upgrade to", "").strip()
 
+        if not pkg or not target_version:
+            updated_row["result"] = "FAILED: Missing 'package name' or 'version to upgrade to'"
+            self.logger.error(f"Row validation failed: missing package name or version to upgrade to ({row})")
+            return updated_row, "error"
+
+        self.logger.info(f"Processing row for package '{pkg}' target version '{target_version}'...")
+
+        try:
+            pypi_idx = {}
+            feed_det = {}
+            resolved_version = target_version
+            category = "analyzed"
+
+            if ActionType.ANALYZE in req.actions:
+                pypi_idx, feed_det, resolved_version = self._analyze_action(
+                    pkg, target_version, req.python_tag, req.platforms, target_feed
+                )
+                updated_row["pypi_index"] = json.dumps(pypi_idx)
+                updated_row["feed_details"] = json.dumps(feed_det)
+                updated_row["result"] = "PASS: Analyzed"
+                self.logger.info(
+                    f"Package '{pkg}' analysis complete: PyPI={pypi_idx.get(req.python_tag)}, Feed={feed_det.get(req.python_tag)}"
+                )
+            else:
+                if updated_row.get("pypi_index"):
+                    pypi_idx = json.loads(updated_row["pypi_index"])
+                if updated_row.get("feed_details"):
+                    feed_det = json.loads(updated_row["feed_details"])
+
+            if ActionType.FIX in req.actions:
+                if not pypi_idx:
+                    pypi_idx, feed_det, resolved_version = self._analyze_action(
+                        pkg, target_version, req.python_tag, req.platforms, target_feed
+                    )
+                    updated_row["pypi_index"] = json.dumps(pypi_idx)
+                    updated_row["feed_details"] = json.dumps(feed_det)
+
+                res = self._fix_action(
+                    pkg, resolved_version, pypi_idx, feed_det, req.platforms, target_feed, req.python_tag
+                )
+                updated_row["result"] = res
+                if res.startswith("PASS"):
+                    category = "fixed"
+                    self.logger.info(f"Package '{pkg}' fix completed: {res}")
+                else:
+                    category = "error"
+                    self.logger.warning(f"Package '{pkg}' fix issue: {res}")
+
+            return updated_row, category
+
+        except (
+            UpstreamError,
+            NotFoundError,
+            BadRequestError,
+            ValueError,
+            KeyError,
+            requests.RequestException,
+        ) as e:
+            err_msg = f"FAILED: {e}"
+            updated_row["result"] = err_msg
+            self.logger.exception(f"Error processing row for package '{pkg}'")
+            return updated_row, "error"
+
+    def process_analyze_and_fix(self, req: AnalyzeAndFixRequest) -> AnalyzeAndFixResponse:
+        """Processes batch upgrade CSV file concurrently using a ThreadPoolExecutor."""
         if not os.path.isfile(req.csv_path):
             raise BadRequestError(f"CSV file not found: {req.csv_path}")
 
         target_feed = req.feed_name or self.settings.azure_feed_name
 
-        rows = []
         with open(req.csv_path, "r", encoding="utf-8") as fh:
             reader = csv.DictReader(fh)
-            fieldnames = reader.fieldnames or []
-            rows = list(reader)
+            fieldnames = list(reader.fieldnames or [])
+            raw_rows = list(reader)
 
         for col in ["pypi_index", "feed_details", "result"]:
             if col not in fieldnames:
                 fieldnames.append(col)
 
+        if not raw_rows:
+            return AnalyzeAndFixResponse(
+                csv_path=req.csv_path,
+                total_processed=0,
+                analyzed=0,
+                fixed=0,
+                errors=0,
+            )
+
+        self.logger.info(f"Starting batch CSV processing for {len(raw_rows)} rows using ThreadPoolExecutor...")
+
+        max_workers = min(10, len(raw_rows))
+        results_by_index: dict[int, tuple[dict, str]] = {}
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_index = {
+                executor.submit(self._process_single_row, row, req, target_feed): idx
+                for idx, row in enumerate(raw_rows)
+            }
+            for future in as_completed(future_to_index):
+                idx = future_to_index[future]
+                try:
+                    result_row, category = future.result()
+                    results_by_index[idx] = (result_row, category)
+                except Exception as e:
+                    self.logger.exception(f"Unexpected error executing worker for row index {idx}")
+                    fallback_row = dict(raw_rows[idx])
+                    fallback_row["result"] = f"FAILED: Worker exception: {e}"
+                    results_by_index[idx] = (fallback_row, "error")
+
+        processed_rows = []
         analyzed_count = 0
         fixed_count = 0
         errors_count = 0
 
-        for row in rows:
-            pkg = row.get("package name", "").strip()
-            target_version = row.get("version to upgrade to", "").strip()
-
-            if not pkg or not target_version:
-                row["result"] = "FAILED: Missing 'package name' or 'version to upgrade to'"
-                errors_count += 1
-                continue
-
-            try:
-                pypi_idx = {}
-                feed_det = {}
-                resolved_version = target_version
-
-                if ActionType.ANALYZE in req.actions:
-                    pypi_idx, feed_det, resolved_version = self._analyze_action(
-                        pkg, target_version, req.python_tag, req.platforms, target_feed
-                    )
-                    row["pypi_index"] = json.dumps(pypi_idx)
-                    row["feed_details"] = json.dumps(feed_det)
-                    row["result"] = "PASS: Analyzed"
-                    analyzed_count += 1
-                else:
-                    if row.get("pypi_index"):
-                        pypi_idx = json.loads(row["pypi_index"])
-                    if row.get("feed_details"):
-                        feed_det = json.loads(row["feed_details"])
-
-                if ActionType.FIX in req.actions:
-                    if not pypi_idx:
-                        pypi_idx, feed_det, resolved_version = self._analyze_action(
-                            pkg, target_version, req.python_tag, req.platforms, target_feed
-                        )
-                        row["pypi_index"] = json.dumps(pypi_idx)
-                        row["feed_details"] = json.dumps(feed_det)
-
-                    res = self._fix_action(
-                        pkg, resolved_version, pypi_idx, feed_det, req.platforms, target_feed, req.python_tag
-                    )
-                    row["result"] = res
-                    if res.startswith("PASS"):
-                        fixed_count += 1
-                    else:
-                        errors_count += 1
-
-            except (UpstreamError, NotFoundError, BadRequestError, ValueError, KeyError) as e:
-                row["result"] = f"FAILED: {e}"
+        for idx in range(len(raw_rows)):
+            row, cat = results_by_index[idx]
+            processed_rows.append(row)
+            if cat == "analyzed":
+                analyzed_count += 1
+            elif cat == "fixed":
+                fixed_count += 1
+            else:
                 errors_count += 1
 
         with open(req.csv_path, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(rows)
+            writer.writerows(processed_rows)
+
+        self.logger.info(
+            f"Batch CSV processing finished for '{req.csv_path}': "
+            f"Total={len(processed_rows)}, Analyzed={analyzed_count}, Fixed={fixed_count}, Errors={errors_count}"
+        )
 
         return AnalyzeAndFixResponse(
             csv_path=req.csv_path,
-            total_processed=len(rows),
+            total_processed=len(processed_rows),
             analyzed=analyzed_count,
             fixed=fixed_count,
             errors=errors_count,

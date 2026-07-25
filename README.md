@@ -59,30 +59,15 @@ feed-service/
 
 ---
 
-## ⚙️ Configuration (`.env`)
+## ⚙️ Configuration
 
-Configure your target Azure DevOps organization and feed settings in `.env`:
+Copy `.env.example` to `.env` and fill in your environment-specific Azure DevOps and feed details:
 
-```dotenv
-# --- Azure DevOps / Artifacts ---
-AZURE_ORG=your-organization-name
-AZURE_PROJECT=00000000-0000-0000-0000-000000000000
-AZURE_PROJECT_NAME=Your Project Name
-AZURE_FEED_NAME=YourFeedName
-AZURE_DEVOPS_UI_BASE=
-AZURE_API_VERSION=7.1-preview.1
-AZURE_PAT=your-azure-personal-access-token
-
-# --- PyPI Settings ---
-PYPI_JSON_BASE=https://pypi.org/pypi
-PYPI_PROJECT_BASE=https://pypi.org/project
-
-# --- Application Defaults ---
-DEFAULT_PYTHON_TAG=cp312
-DEFAULT_DOWNLOAD_DIR=./wheels
-REQUEST_TIMEOUT=60
-UPLOAD_TIMEOUT=600
+```bash
+cp .env.example .env
 ```
+
+Update `.env` with your Azure DevOps parameters (`AZURE_ORG`, `AZURE_PROJECT`, `AZURE_PROJECT_NAME`, `AZURE_FEED_NAME`, and `AZURE_PAT`).
 
 ---
 
@@ -92,18 +77,12 @@ UPLOAD_TIMEOUT=600
 - Python 3.12+
 - `uv` package manager
 
-### 2. Setup Environment
-```bash
-cp .env.example .env
-# Fill in your AZURE_ORG, AZURE_PROJECT, AZURE_FEED_NAME, and AZURE_PAT
-```
-
-### 3. Install Dependencies
+### 2. Install Dependencies
 ```bash
 make dev
 ```
 
-### 4. Run Server
+### 3. Run Server
 ```bash
 make run-reload
 ```

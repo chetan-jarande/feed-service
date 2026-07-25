@@ -2,6 +2,7 @@ PYTHON_VERSION ?= 3.12
 VENV_ROOT ?= ./.venv
 HOST ?= 0.0.0.0
 PORT ?= 8080
+WORKERS ?= 4
 
 .DEFAULT_GOAL := help
 
@@ -19,8 +20,8 @@ deps: ## Install runtime dependencies only
 dev: ## Install runtime + dev dependencies
 	uv sync
 
-run: ## Start the API server
-	uv run uvicorn main:app --host $(HOST) --port $(PORT)
+run: ## Start the API server with workers
+	uv run uvicorn main:app --host $(HOST) --port $(PORT) --workers $(WORKERS)
 
 run-reload: ## Start with auto-reload
 	uv run uvicorn main:app --reload --port $(PORT)
