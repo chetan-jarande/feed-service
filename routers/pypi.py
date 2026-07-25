@@ -7,11 +7,16 @@ from services import FeedService
 router = APIRouter(prefix="/packages", tags=["PyPI"])
 
 
-@router.post("/download", response_model=DownloadResponse)
+@router.post(
+    "/download",
+    response_model=DownloadResponse,
+    description="Download compatible wheel files from PyPI based on Python ABI tag and OS target platform.",
+)
 def download_package(
     req: DownloadRequest,
     service: FeedService = Depends(get_service),
 ) -> DownloadResponse:
+    """Downloads PyPI wheels matching requested Python tag and platform specifications."""
     return _run(
         lambda: service.download_wheels(
             name=req.name,

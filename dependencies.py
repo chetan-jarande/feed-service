@@ -1,5 +1,4 @@
 from collections.abc import Callable
-from typing import TypeVar
 
 from fastapi import Depends, HTTPException, status
 
@@ -8,12 +7,12 @@ from services import BadRequestError, FeedService, NotFoundError, UpstreamError
 
 
 def get_service(settings: Settings = Depends(get_settings)) -> FeedService:
+    """FastAPI dependency provider returning initialized FeedService."""
     return FeedService(settings)
 
 
-T = TypeVar("T")
-
-def _run(fn: Callable[[], T]) -> T:
+def _run[T](fn: Callable[[], T]) -> T:
+    """Helper wrapper mapping FeedService domain exceptions to HTTP response status codes."""
     try:
         return fn()
     except NotFoundError as e:

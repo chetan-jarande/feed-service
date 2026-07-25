@@ -1,18 +1,92 @@
-# AcmeHub Feed Service
+# Python Feed Service (Artifact Feed Sync & Migration Tool)
 
-A professional, FastAPI-based microservice that inspects, downloads, and publishes Python wheels for a private Azure DevOps Artifacts feed (`AcmeHub`). Designed specifically to automate large-scale Python version migrations (e.g., Python 3.10 to 3.12 or 3.13) and security audits by providing deep insights and automated backfill operations for private feeds.
+A generic, production-ready FastAPI microservice designed to inspect, download, analyze, and publish Python wheel packages (`.whl`) to private **Azure DevOps Artifacts feeds**.
 
-Built as an API-first tool, it acts as an intelligent intermediary that can be queried programmatically or driven by an AI coding agent to resolve missing transitive dependencies.
+This service automates complex, multi-package dependency management tasks, such as **Python version upgrades** (e.g., upgrading repositories from Python 3.10 to 3.12 or 3.13), **security vulnerability remediations**, and **private feed synchronization**.
 
-## Key Capabilities
+It is completely generic, OS-agnostic, and Python-version-agnostic—making it ideal both as a developer tool and as an API backend driven by **AI coding agents**.
 
-- **Universal Python Tag Support**: Supports dynamic `python_tag` resolution (`cp312`, `cp313`, `py3`, etc.) ensuring your tools aren't hardcoded to a specific Python version migration.
-- **Transitive Dependency Resolution**: Automatically crawls PyPI to discover inner/transitive dependencies when verifying compatibility, ensuring 90+ package trees are fully satisfied.
-- **Cross-Platform Wheel Filtering**: Validates and downloads wheels specifically targeting OS requirements (`windows`, `linux`, `macos`, or `all`). Automatically prioritizes universal pure Python wheels (`py3-none-any`).
-- **Deep Compatibility Checks (`/packages/compat-check`)**: Evaluates `requirements.txt` against both PyPI and Azure DevOps feeds, reporting exactly which platforms are satisfied and which need backfilling.
-- **Automated Upload Pipeline (`/feed/upload-from-report`)**: Reads the output of a compatibility check and securely triggers `twine` uploads to backfill the exact missing `.whl` files into the private feed.
+---
 
-## Quick Start
+## 🎯 Purpose & Motivation
+
+When maintaining enterprise Python applications using private package feeds (e.g. Azure DevOps Artifacts), major upgrades or security package patches introduce significant manual overhead:
+
+1. **Massive Package Volume**: Modern projects often depend on 90+ direct and transitive packages. Manually checking PyPI and your private feed for compatible wheels across platforms is error-prone and time-consuming.
+2. **Platform & ABI Constraints**: Python version upgrades require verified wheel support for target Python tags (e.g., `cp312`, `cp311`, `py3`) and operating systems (`windows`, `linux`, `macos`). Universal pure Python wheels (`py3-none-any`) are top-priority because they work universally across operating systems and Python 3 interpreters.
+3. **Transitive Dependencies**: Upgrading a top-level dependency frequently pulls in nested transitive dependencies that might not exist in your private feed yet.
+4. **Feed Conflict Management**: Azure DevOps feeds reject duplicate wheel uploads with HTTP `409 Conflict`. Automatically checking the feed's PEP 503 index before running Twine uploads prevents pipeline failures.
+
+This service eliminates these manual pain points by providing **isolated PyPI querying, feed availability checks, transitive dependency resolution, and automated batch CSV analysis and feed backfilling**.
+
+---
+
+## ✨ Key Capabilities
+
+- **Generic & Configuration-Driven**: Works with **any** Azure DevOps organization, project, and private feed. No hardcoded organization or feed defaults.
+- **Universal Python ABI Tag Support**: Configurable per request (e.g., `cp312`, `cp313`, `cp311`, `py3`), making it fully reusable across any Python version migration.
+- **Multi-OS Platform Compatibility**: Filters and resolves wheels targeting `windows` (`win_amd64`), `linux` (`manylinux`/`x86_64`), `macos` (`macosx`/`universal2`), or `all`. Automatically detects pure universal wheels (`py3-none-any`).
+- **Transitive Dependency Crawler**: Uses PyPI's JSON API to resolve inner/transitive dependencies, ensuring entire dependency trees are evaluated.
+- **Batch CSV Pipeline (`/packages/analyze-and-fix`)**:
+  - `ANALYZE`: Scans an input CSV and populates `pypi_index` and `feed_details` JSON columns with platform-specific wheel availability.
+  - `FIX`: Downloads missing wheels from PyPI and uploads them directly to the private Azure feed using Twine.
+- **Resilient Architectural Isolation**: PyPI index analysis runs independently of private feed availability. If feed credentials or network access fail, PyPI analysis continues uninterrupted.
+- **Security & Redaction**: Automatically redacts Personal Access Tokens (`AZURE_PAT`) from all response logs and process outputs.
+
+---
+
+## 🏗 Architecture & Folder Structure
+
+```
+feed-service/
+├── main.py              # FastAPI app entry point (Root & Health routes)
+├── dependencies.py      # Dependency injection & domain exception mapping
+├── config.py            # Environment-driven settings (pydantic-settings)
+├── logger.py            # Structured logging configuration
+├── models.py            # Pydantic v2 schemas with examples & descriptions
+├── services.py          # PyPI, Azure Feed, and Twine upload domain logic
+├── sample_upgrade.csv   # Sample CSV template for batch upgrade automation
+├── .env.example         # Template for environment variables
+├── pyproject.toml       # Project configuration managed via `uv`
+├── Makefile             # Development workflow automation commands
+├── routers/
+│   ├── core.py          # Core workflow endpoints (inspect, compat-check, analyze-and-fix)
+│   ├── pypi.py          # PyPI-specific wheel download endpoints
+│   └── feed.py          # Azure feed information and upload endpoints
+└── tests/
+    └── test_api.py      # Automated offline pytest suite
+```
+
+---
+
+## ⚙️ Configuration (`.env`)
+
+Configure your target Azure DevOps organization and feed settings in `.env`:
+
+```dotenv
+# --- Azure DevOps / Artifacts ---
+AZURE_ORG=your-organization-name
+AZURE_PROJECT=00000000-0000-0000-0000-000000000000
+AZURE_PROJECT_NAME=Your Project Name
+AZURE_FEED_NAME=YourFeedName
+AZURE_DEVOPS_UI_BASE=
+AZURE_API_VERSION=7.1-preview.1
+AZURE_PAT=your-azure-personal-access-token
+
+# --- PyPI Settings ---
+PYPI_JSON_BASE=https://pypi.org/pypi
+PYPI_PROJECT_BASE=https://pypi.org/project
+
+# --- Application Defaults ---
+DEFAULT_PYTHON_TAG=cp312
+DEFAULT_DOWNLOAD_DIR=./wheels
+REQUEST_TIMEOUT=60
+UPLOAD_TIMEOUT=600
+```
+
+---
+
+## 🚀 Quick Start
 
 ### 1. Requirements
 - Python 3.12+
@@ -21,7 +95,7 @@ Built as an API-first tool, it acts as an intelligent intermediary that can be q
 ### 2. Setup Environment
 ```bash
 cp .env.example .env
-# Edit .env and set your AZURE_PAT if performing upload actions
+# Fill in your AZURE_ORG, AZURE_PROJECT, AZURE_FEED_NAME, and AZURE_PAT
 ```
 
 ### 3. Install Dependencies
@@ -29,31 +103,67 @@ cp .env.example .env
 make dev
 ```
 
-### 4. Run Service
+### 4. Run Server
 ```bash
 make run-reload
 ```
-The API server runs at `http://localhost:8080`. Interactive API documentation and schema models are available at `http://localhost:8080/docs`.
+The server will start at `http://localhost:8080`.
+Interactive API documentation and schema examples are accessible at `http://localhost:8080/docs`.
 
-## Endpoints
+---
 
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/health` | GET | Liveness check. |
-| `/packages/inspect` | POST | Detailed latest version info from PyPI and the feed. |
-| `/packages/download` | POST | Download `.whl` files from PyPI matching `python_tag` and `platform`. |
-| `/feed/package-info` | POST | Query feed package versions and attached wheel files. |
-| `/feed/upload` | POST | Securely upload local `.whl` files to the Azure DevOps feed. |
-| `/packages/compat-check` | POST | Generate a robust cp/py compatibility report, optionally resolving transitive dependencies. |
-| `/feed/upload-from-report` | POST | Automatically download and upload wheels flagged as missing in a CSV report. |
+## 📡 API Endpoints Overview
 
-## Development Commands
+| Route | Method | Router Tag | Description |
+|---|---|---|---|
+| `/` | `GET` | `Root` | Basic service metadata and docs link. |
+| `/health` | `GET` | `Health Check` | Operational liveness check. |
+| `/packages/inspect` | `POST` | `Core Feed Operations` | Inspect package release info on PyPI and target feed simultaneously. |
+| `/packages/compat-check` | `POST` | `Core Feed Operations` | Bulk Python ABI / OS compatibility check for packages or `requirements.txt`. |
+| `/packages/analyze-and-fix` | `POST` | `Core Feed Operations` | Single-endpoint CSV pipeline to analyze PyPI/feed status and auto-backfill missing wheels. |
+| `/feed/upload-from-report` | `POST` | `Core Feed Operations` | Backfill feed using a generated compatibility CSV report. |
+| `/packages/download` | `POST` | `PyPI` | Download matching `.whl` files from PyPI for target platform/Python tag. |
+| `/feed/package-info` | `POST` | `Azure DevOps Feed` | Query package versions and attached wheel files in the private feed. |
+| `/feed/upload` | `POST` | `Azure DevOps Feed` | Upload local wheel files to Azure feed via Twine. |
+
+---
+
+## 📊 Batch CSV Workflow Example (`/packages/analyze-and-fix`)
+
+Input `sample_upgrade.csv`:
+```csv
+package name,current version,version to upgrade to
+requests,2.28.0,latest
+pydantic,1.10.0,2.6.0
+```
+
+**Request**:
+```json
+{
+  "csv_path": "sample_upgrade.csv",
+  "python_tag": "cp312",
+  "platforms": ["windows", "linux"],
+  "actions": ["ANALYZE", "FIX"]
+}
+```
+
+**Output CSV Result**:
+Columns `pypi_index`, `feed_details`, and `result` are appended in-place with detailed JSON status and completion messages:
+```csv
+package name,current version,version to upgrade to,pypi_index,feed_details,result
+requests,2.28.0,latest,"{""cp312"": true, ""windows"": ""requests-2.31.0-py3-none-any.whl"", ""linux"": ""requests-2.31.0-py3-none-any.whl""}","{""cp312"": false, ""windows"": null, ""linux"": null}","PASS: Successfully fixed and uploaded missing wheels"
+```
+
+---
+
+## 🛠 Development Commands
 
 ```bash
-make dev        # Install dependencies
-make run        # Run server on port 8080
-make test       # Run pytest test suite
-make lint       # Run ruff lint check
+make dev        # Install runtime and dev dependencies
+make run        # Start uvicorn server on port 8080
+make run-reload # Start uvicorn server with auto-reload
+make test       # Run test suite via pytest
+make lint       # Run ruff check
 make format     # Format code with ruff
 make clean      # Clean virtual environment and caches
 ```

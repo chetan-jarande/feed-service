@@ -43,10 +43,12 @@ class UpstreamError(Exception):
 
 
 def _norm(name: str) -> str:
+    """Normalizes a Python package name according to PEP 503 rules (lowercase, collapse [-._] to -)."""
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def _vkey(v: str) -> packaging.version.Version:
+    """Parses a version string using packaging.version.Version with a fallback to version '0'."""
     try:
         return packaging.version.Version(v)
     except (packaging.version.InvalidVersion, TypeError, ValueError):
@@ -54,6 +56,8 @@ def _vkey(v: str) -> packaging.version.Version:
 
 
 class FeedService:
+    """Core domain service handling PyPI inspection, Azure Artifacts querying, and Twine package publishing."""
+
     CSV_FIELDS: ClassVar[list[str]] = [
         "package",
         "version",
@@ -69,16 +73,19 @@ class FeedService:
     ]
 
     def __init__(self, settings: Settings) -> None:
+        """Initializes FeedService with settings and logger."""
         self.settings = settings
         self.logger = get_logger(__name__)
 
     def _auth_header(self) -> dict[str, str]:
+        """Constructs HTTP Basic Authentication header using Azure PAT."""
         if self.settings.azure_pat:
             encoded = base64.b64encode(f":{self.settings.azure_pat}".encode()).decode()
             return {"Authorization": f"Basic {encoded}"}
         return {}
 
     def _get(self, url: str, auth: bool = False) -> requests.Response:
+        """Executes HTTP GET request with optional authentication and standard timeout."""
         try:
             headers = self._auth_header() if auth else {}
             resp = requests.get(url, headers=headers, timeout=self.settings.request_timeout)
@@ -87,6 +94,7 @@ class FeedService:
             raise UpstreamError(f"HTTP request to {url} failed: {e}") from e
 
     def pypi_info(self, name: str) -> dict:
+        """Fetches raw package JSON data from PyPI."""
         normalized_name = _norm(name)
         url = f"{self.settings.pypi_json_base}/{normalized_name}/json"
         resp = self._get(url)
@@ -100,6 +108,7 @@ class FeedService:
             raise UpstreamError(f"Failed to parse PyPI response for '{name}': {e}") from e
 
     def pypi_latest(self, name: str) -> PypiDetails:
+        """Fetches latest release summary details for a package from PyPI."""
         data = self.pypi_info(name)
         info = data.get("info", {})
         version = info.get("version", "0.0.0")
@@ -633,7 +642,11 @@ class FeedService:
         while queue:
             pkg, ver = queue.pop(0)
             try:
-                url = f"{self.settings.pypi_json_base}/{_norm(pkg)}/{ver}/json" if ver else f"{self.settings.pypi_json_base}/{_norm(pkg)}/json"
+                url = (
+                    f"{self.settings.pypi_json_base}/{_norm(pkg)}/{ver}/json"
+                    if ver
+                    else f"{self.settings.pypi_json_base}/{_norm(pkg)}/json"
+                )
                 resp = self._get(url)
                 if resp.status_code == 200:
                     data = resp.json()
@@ -813,6 +826,7 @@ class FeedService:
         )
 
     def _analyze_platform_availability(self, files: list[dict], python_tag: str, platforms: list[str]) -> dict:
+        """Analyzes wheel availability per platform for a given python tag."""
         result = {python_tag: False}
         for plat in platforms:
             result[plat] = None
@@ -833,8 +847,9 @@ class FeedService:
         target_version: str,
         python_tag: str,
         platforms: list[str],
-        feed: str
+        feed: str,
     ) -> tuple[dict, dict, str]:
+        """Evaluates PyPI and Azure feed wheel availability for a given package version."""
         resolved_version = target_version
         if target_version.lower() == "latest":
             try:
@@ -861,7 +876,10 @@ class FeedService:
 
         try:
             feed_info = self.feed_package_info(package, feed=feed, version=resolved_version)
-            feed_files = [{"filename": fn, "packagetype": "bdist_wheel" if fn.endswith(".whl") else "sdist"} for fn in feed_info.wheels]
+            feed_files = [
+                {"filename": fn, "packagetype": "bdist_wheel" if fn.endswith(".whl") else "sdist"}
+                for fn in feed_info.wheels
+            ]
             feed_details = self._analyze_platform_availability(feed_files, python_tag, platforms)
         except (NotFoundError, UpstreamError):
             pass
@@ -876,8 +894,9 @@ class FeedService:
         feed_details: dict,
         platforms: list[str],
         feed: str,
-        python_tag: str
+        python_tag: str,
     ) -> str:
+        """Downloads missing wheels from PyPI and uploads them to target feed via Twine."""
         if not pypi_index.get(python_tag):
             return "FAILED: No compatible wheels on PyPI"
 
@@ -928,6 +947,7 @@ class FeedService:
         return "PASS: No action needed"
 
     def process_analyze_and_fix(self, req: AnalyzeAndFixRequest) -> AnalyzeAndFixResponse:
+        """Processes batch upgrade CSV file, analyzing PyPI/feed status and optional auto-fix uploading."""
         import json
 
         if not os.path.isfile(req.csv_path):

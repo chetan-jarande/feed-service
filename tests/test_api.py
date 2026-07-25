@@ -11,7 +11,7 @@ client = TestClient(main.app)
 def test_health() -> None:
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "service": "AcmeHub Feed Service"}
+    assert response.json() == {"status": "ok", "service": "Python Feed Service"}
 
 
 def test_inspect_validation_error() -> None:
@@ -124,9 +124,7 @@ def test_analyze_and_fix_endpoint_missing_file() -> None:
 def test_analyze_and_fix_flow(tmp_path) -> None:
     csv_file = tmp_path / "test_upgrade.csv"
     csv_file.write_text(
-        "package name,current version,version to upgrade to\n"
-        "requests,2.28.0,latest\n"
-        "invalid-pkg,,1.0.0\n",
+        "package name,current version,version to upgrade to\nrequests,2.28.0,latest\ninvalid-pkg,,1.0.0\n",
         encoding="utf-8",
     )
 
