@@ -1,0 +1,4 @@
+package name,current version,version to upgrade to,pypi_index,feed_details,result
+requests,2.28.0,latest,"{""cp312"": true, ""windows"": ""requests-2.34.2-py3-none-any.whl"", ""linux"": ""requests-2.34.2-py3-none-any.whl""}","{""cp312"": false, ""windows"": null, ""linux"": null}",PASS: Analyzed
+pydantic,1.10.0,2.6.0,"{""cp312"": true, ""windows"": ""pydantic-2.6.0-py3-none-any.whl"", ""linux"": ""pydantic-2.6.0-py3-none-any.whl""}","{""cp312"": false, ""windows"": null, ""linux"": null}",PASS: Analyzed
+dummy-pkg,,2.0.0,"{""cp312"": false, ""windows"": null, ""linux"": null}","{""cp312"": false, ""windows"": null, ""linux"": null}",PASS: Analyzed

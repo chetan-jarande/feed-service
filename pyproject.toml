@@ -1,0 +1,39 @@
+[project]
+name = "acmehub-feed-service"
+version = "1.0.0"
+description = "AcmeHub Feed Service for PyPI and Azure DevOps Artifacts wheels"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "requests>=2.31",
+    "packaging>=23.0",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "twine>=5.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "httpx>=0.27.0",
+    "ruff>=0.5.0",
+    "mypy>=1.10.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+ignore = ["B008", "N999"]
+
+[tool.mypy]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
