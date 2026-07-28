@@ -80,6 +80,31 @@ class FeedService:
         self.session = session or requests.Session()
         self.logger = get_logger(__name__)
 
+    def _resolve_feed_name(self, feed: str | None) -> str:
+        """Resolves target feed name from parameter with fallback to environment settings.
+
+        Args:
+            feed: Explicitly provided feed name (takes precedence if non-empty).
+
+        Returns:
+            Resolved feed name.
+
+        Raises:
+            BadRequestError: If no valid feed name is available from parameter or settings.
+        """
+        if feed and feed.strip():
+            resolved = feed.strip()
+            self.logger.debug(f"Using feed name from parameter: '{resolved}'")
+            return resolved
+
+        if self.settings.azure_feed_name:
+            self.logger.debug(f"Using feed name from environment: '{self.settings.azure_feed_name}'")
+            return self.settings.azure_feed_name
+
+        raise BadRequestError(
+            "No feed name provided. Supply 'feed_name' parameter or set AZURE_FEED_NAME environment variable."
+        )
+
     def _auth_header(self) -> dict[str, str]:
         """Constructs HTTP Basic Authentication header using Azure PAT."""
         if self.settings.azure_pat:
@@ -214,7 +239,7 @@ class FeedService:
         return filenames
 
     def feed_package_info(self, name: str, feed: str | None = None, version: str | None = None) -> FeedInfoResponse:
-        target_feed = feed or self.settings.azure_feed_name
+        target_feed = self._resolve_feed_name(feed)
         pkg = self.find_feed_package(name, target_feed)
         versions_raw = pkg.get("versions", [])
         if not versions_raw:
@@ -250,7 +275,7 @@ class FeedService:
         )
 
     def inspect(self, name: str, feed: str | None = None) -> InspectResponse:
-        target_feed = feed or self.settings.azure_feed_name
+        target_feed = self._resolve_feed_name(feed)
         pypi_details: PypiDetails | None = None
         pypi_err: str | None = None
         feed_ref: FeedRef | None = None
@@ -393,7 +418,7 @@ class FeedService:
         feed: str | None = None,
         skip_existing: bool = True,
     ) -> UploadResponse:
-        target_feed = feed or self.settings.azure_feed_name
+        target_feed = self._resolve_feed_name(feed)
 
         if not self.settings.azure_pat:
             raise BadRequestError("AZURE_PAT is required for uploading to feed")
@@ -530,7 +555,7 @@ class FeedService:
         include_pypi: bool = True,
         python_tag: str = "cp312",
     ) -> CompatRow:
-        target_feed = feed or self.settings.azure_feed_name
+        target_feed = self._resolve_feed_name(feed)
         resolved_version = version
 
         # Check feed
@@ -684,7 +709,7 @@ class FeedService:
         python_tag: str = "cp312",
         resolve_dependencies: bool = False,
     ) -> CompatCheckResponse:
-        target_feed = feed or self.settings.azure_feed_name
+        target_feed = self._resolve_feed_name(feed)
         specs = self._parse_specs(packages or [], requirements_path)
 
         if resolve_dependencies:
@@ -738,10 +763,10 @@ class FeedService:
         dry_run: bool = True,
         dest_dir: str | None = None,
     ) -> UploadFromReportResponse:
-        target_feed = feed or self.settings.azure_feed_name
-
         if not os.path.isfile(csv_path):
             raise BadRequestError(f"CSV file not found: {csv_path}")
+
+        target_feed = self._resolve_feed_name(feed)
 
         planned_rows = []
         with open(csv_path, "r", encoding="utf-8") as fh:
@@ -1028,7 +1053,7 @@ class FeedService:
         if not os.path.isfile(req.csv_path):
             raise BadRequestError(f"CSV file not found: {req.csv_path}")
 
-        target_feed = req.feed_name or self.settings.azure_feed_name
+        target_feed = self._resolve_feed_name(req.feed_name)
 
         with open(req.csv_path, "r", encoding="utf-8") as fh:
             reader = csv.DictReader(fh)
